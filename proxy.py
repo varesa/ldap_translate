@@ -11,65 +11,93 @@ import sys
 import base64
 
 
+def try_log(message):
+    try:
+        log.msg(message)
+    except UnicodeDecodeError:
+        log.msg('Binary data')
+
+
+def handle_bind_request(request, controls, reply):
+    request_dn = request.dn.decode()
+    if '@' in request_dn and ',' not in request_dn:
+        user, domain = request_dn.split('@')
+        dcs = ','.join(f'dc={dc}' for dc in domain.split('.'))
+        dn = f"uid={user},cn=users,cn=accounts,{dcs}"
+        request.dn = dn.encode()
+        log.msg("Modified  => " + repr(request))
+    return defer.succeed((request, controls))
+
+
+def send_object(objectName, attributes, reply) -> None:
+    entry = pureldap.LDAPSearchResultEntry(objectName=objectName, attributes=attributes)
+    try_log("Response => " + repr(entry))
+    reply(entry)
+    done = pureldap.LDAPSearchResultDone(resultCode=0)
+    try_log("Response => " + repr(done))
+    reply(done)
+
+
+def translate_attributes_k(attributes: list, mapping: dict):
+    new_attributes = []
+    for attribute in attributes:
+        if attribute in mapping.keys():
+            new_attributes.append(mapping[attribute])
+        else:
+            new_attributes.append(attribute)
+    return new_attributes
+
+
+def translate_attributes_kv(attributes: list, mapping: dict):
+    new_attributes = []
+    for key, values in attributes:
+        if key in mapping.keys():
+            new_attributes.append((mapping[key], values,))
+        else:
+            new_attributes.append((key, values,))
+    return new_attributes
+
+
+def handle_search_request(request, controls, reply):
+    bo = request.baseObject.decode()
+    if bo.startswith('CN=Partitions,CN=Configuration,'):
+        return send_object(
+            objectName='CN=ESAV.FI,CN=Partitions,CN=Configuration,DC=esav,DC=fi',
+            attributes=[
+                ('objectClass', ['top', 'crossRef']),
+                ('netbiosname', ['ESAV.FI']),
+            ], reply=reply)
+
+    if len(request.attributes) == 1 and request.attributes[0] == b'objectSid':
+        return send_object(
+            objectName='DC=esav,DC=fi',
+            attributes=[
+                ('objectSid', [base64.b64decode('AQQAAAAAAAUVAAAABszE9hHPqWc9qhkd')]),
+            ], reply=reply)
+
+    if len(request.attributes) == 1 and request.attributes[0] == b'objectGUID':
+        return send_object(
+            objectName='DC=esav,DC=fi',
+            attributes=[
+                ('objectGUID', [base64.b64decode('PJ7qGgyLbkqXIY1XOjVyBQ==')]),
+            ], reply=reply)
+
+    request.attributes = translate_attributes_k(request.attributes, {
+        "objectGUID": "ipaUniqueID"
+    })
+
+    return defer.succeed((request, controls))
+
+
 class LoggingProxy(ProxyBase):
     def handleBeforeForwardRequest(self, request, controls, reply):
         log.msg("Request => " + repr(request))
+
         if isinstance(request, pureldap.LDAPBindRequest):
-            request_dn = request.dn.decode()
-            if '@' in request_dn and ',' not in request_dn:
-                user, domain = request_dn.split('@')
-                dcs = ','.join(f'dc={dc}' for dc in domain.split('.'))
-                dn = f"uid={user},cn=users,cn=accounts,{dcs}"
-                request.dn = dn.encode()
-                log.msg("Modifd  => " + repr(request))
+            return handle_bind_request(request, controls, reply)
+
         elif isinstance(request, pureldap.LDAPSearchRequest):
-            bo = request.baseObject.decode()
-            if bo.startswith('CN=Partitions,CN=Configuration,'):
-                entry = pureldap.LDAPSearchResultEntry(
-                        objectName='CN=ESAV.FI,CN=Partitions,CN=Configuration,DC=esav,DC=fi',
-                        attributes=[
-                            ('objectClass', ['top', 'crossRef']),
-                            ('netbiosname', ['ESAV.FI']),
-                        ])
-                log.msg("Response  => " + repr(entry))
-                reply(entry)
-                done = pureldap.LDAPSearchResultDone(resultCode=0)
-                log.msg("Response  => " + repr(done))
-                reply(done)
-                return None
-
-            if len(request.attributes) == 1 and request.attributes[0] == b'objectSid':
-                entry = pureldap.LDAPSearchResultEntry(
-                        objectName='DC=esav,DC=fi', 
-                        attributes=[
-                            ('objectSid', [base64.b64decode('AQQAAAAAAAUVAAAABszE9hHPqWc9qhkd')]),
-                        ])
-                log.msg("Response  => [binary values]")
-                reply(entry)
-                done = pureldap.LDAPSearchResultDone(resultCode=0)
-                log.msg("Response  => " + repr(done))
-                reply(done)
-                return None
-                
-            if len(request.attributes) == 1 and request.attributes[0] == b'objectGUID':
-                entry = pureldap.LDAPSearchResultEntry(
-                        objectName='DC=esav,DC=fi', 
-                        attributes=[
-                            ('objectGUID', [base64.b64decode('PJ7qGgyLbkqXIY1XOjVyBQ==')]),
-                        ])
-                log.msg("Response  => [binary values]")
-                reply(entry)
-                done = pureldap.LDAPSearchResultDone(resultCode=0)
-                log.msg("Response  => " + repr(done))
-                reply(done)
-                return None
-                #request.attributes = [b'ipaUniqueID']
-
-            if len(request.attributes) == 1 and request.attributes[0] == b'objectGUID':
-                request.attributes[0] = b'ipaUniqueID'
-                log.msg("Modifd  => " + repr(request))
-
-        return defer.succeed((request,controls))
+            return handle_search_request(request, controls, reply)
 
     """
     A simple example of using `ProxyBase` to log requests and responses.
@@ -80,13 +108,9 @@ class LoggingProxy(ProxyBase):
         """
         if isinstance(response, pureldap.LDAPSearchResultEntry):
 
-            # Replace attribute names
-            new_attributes = []
-            for key, values in response.attributes:
-                if key == b'ipaUniqueID':
-                    key = b'ObjectGUID'
-                new_attributes.append((key, values,))
-            response.attributes = new_attributes
+            response.attributes = translate_attributes_kv(response.attributes, {
+                'ipaUniqueID': 'ObjectGUID'
+            })
 
             # Add distinguishedname
             if b'distinguishedName' in request.attributes:
