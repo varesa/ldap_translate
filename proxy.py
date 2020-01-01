@@ -9,11 +9,12 @@ from twisted.python import log
 from functools import partial
 import sys
 import base64
+import re
 
 
-def try_log(message):
+def try_log_response(resp):
     try:
-        log.msg(message)
+        log.msg("Response => " + repr(resp))
     except UnicodeDecodeError:
         log.msg('Binary data')
 
@@ -31,10 +32,10 @@ def handle_bind_request(request, controls, reply):
 
 def send_object(objectName, attributes, reply) -> None:
     entry = pureldap.LDAPSearchResultEntry(objectName=objectName, attributes=attributes)
-    try_log("Response => " + repr(entry))
+    try_log_response(entry)
     reply(entry)
     done = pureldap.LDAPSearchResultDone(resultCode=0)
-    try_log("Response => " + repr(done))
+    try_log_response(done)
     reply(done)
 
 
@@ -58,26 +59,46 @@ def translate_attributes_kv(attributes: list, mapping: dict):
     return new_attributes
 
 
+def base_attribute_query(request, attribute):
+    return (
+        request.scope == 0 and
+        len(request.attributes) == 1 and
+        request.attributes[0] == attribute and
+        request.baseObject.startswith('dc=')
+    )
+
+
+def get_dcs(dn):
+    return re.search('.*?,(dc=.*)', dn).group(1)
+
+
+def get_domain(dn):
+    """
+    dc=domain,dc=com --> domain.con
+    """
+    dcs = get_dcs(dn)
+    return '.'.join([dc[3:] for dc in dcs.split(',')])
+
+
 def handle_search_request(request, controls, reply):
-    bo = request.baseObject.decode()
-    if bo.startswith('CN=Partitions,CN=Configuration,'):
+    if request.baseObject.decode().startswith('CN=Partitions,CN=Configuration,'):
         return send_object(
-            objectName='CN=ESAV.FI,CN=Partitions,CN=Configuration,DC=esav,DC=fi',
+            objectName=f'CN=ESAV.FI,{request.baseObject}',
             attributes=[
                 ('objectClass', ['top', 'crossRef']),
-                ('netbiosname', ['ESAV.FI']),
+                ('netbiosname', [get_domain(request.baseObject).upper()]),
             ], reply=reply)
 
-    if len(request.attributes) == 1 and request.attributes[0] == b'objectSid':
+    if base_attribute_query(request, b'objectSid'):
         return send_object(
-            objectName='DC=esav,DC=fi',
+            objectName=request.baseObject,
             attributes=[
                 ('objectSid', [base64.b64decode('AQQAAAAAAAUVAAAABszE9hHPqWc9qhkd')]),
             ], reply=reply)
 
-    if len(request.attributes) == 1 and request.attributes[0] == b'objectGUID':
+    if base_attribute_query(request, b'objectGUID'):
         return send_object(
-            objectName='DC=esav,DC=fi',
+            objectName=request.baseObject,
             attributes=[
                 ('objectGUID', [base64.b64decode('PJ7qGgyLbkqXIY1XOjVyBQ==')]),
             ], reply=reply)
@@ -120,17 +141,7 @@ class LoggingProxy(ProxyBase):
         return defer.succeed(response)
 
 
-def ldapBindRequestRepr(self):
-    l=[]
-    l.append('version={0}'.format(self.version))
-    l.append('dn={0}'.format(repr(self.dn)))
-    l.append('auth=****')
-    if self.tag!=self.__class__.tag:
-        l.append('tag={0}'.format(self.tag))
-    l.append('sasl={0}'.format(repr(self.sasl)))
-    return self.__class__.__name__+'('+', '.join(l)+')'
-
-pureldap.LDAPBindRequest.__repr__ = ldapBindRequestRepr
+pureldap.LDAPBindRequest.__repr__ = lambda self: self.__class__.__name__ + '(*auth*)'
 
 if __name__ == '__main__':
     """
