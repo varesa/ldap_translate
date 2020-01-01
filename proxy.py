@@ -91,6 +91,16 @@ def get_domain(dn: bytes) -> str:
     return '.'.join([dc[3:] for dc in dcs.split(',')])
 
 
+def to_string(value: Union[pureldap.BEROctetString, bytes, str]) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode()
+    if isinstance(value, pureldap.BEROctetString):
+        value = value.value
+        return to_string(value)
+
+
 def handle_search_request(request: pureldap.LDAPSearchRequest,
                           controls, reply: Callable) -> Union[defer.Deferred, None]:
     if request.baseObject.decode().startswith('CN=Partitions,CN=Configuration,'):
@@ -121,6 +131,21 @@ def handle_search_request(request: pureldap.LDAPSearchRequest,
             attributes=[
                 ('name', [get_domain(request.baseObject)])
             ], reply=reply)
+
+    if isinstance(request.filter, pureldap.LDAPFilter_or):
+        for sub_filter in request.filter:
+            assert isinstance(sub_filter, pureldap.LDAPFilter_equalityMatch)
+            print(type(sub_filter.assertionValue))
+
+            if to_string(sub_filter.attributeDesc).lower() == 'objectclass' and \
+                to_string(sub_filter.assertionValue).lower() == 'container':
+                request.filter.append(pureldap.LDAPFilter_equalityMatch(
+                    attributeDesc=pureldap.BEROctetString(value='objectClass'),
+                    assertionValue=pureldap.BEROctetString(value='nsContainer')
+                ))
+
+        log.msg("Modified => " + repr(request))
+
 
     request.attributes = translate_attributes_k(request.attributes, {
         "objectGUID": "ipaUniqueID"
