@@ -10,16 +10,24 @@ from functools import partial
 import sys
 import base64
 import re
+from typing import Any, Callable, Collection, Union
 
 
-def try_log_response(resp):
+def try_log_response(resp: Any) -> None:
+    """
+    Try to log a response we're sending out but fail gracefully if __repr__ fails
+    due to binary data in parameters
+    """
     try:
         log.msg("Response => " + repr(resp))
     except UnicodeDecodeError:
         log.msg('Binary data')
 
 
-def handle_bind_request(request, controls, reply):
+def handle_bind_request(request: pureldap.LDAPProtocolRequest, controls, reply: Callable) -> defer.Deferred:
+    """
+    Allow binding with user@DOMAIN instead of full dn uid=user,...,dc=domain
+    """
     request_dn = request.dn.decode()
     if '@' in request_dn and ',' not in request_dn:
         user, domain = request_dn.split('@')
@@ -30,7 +38,10 @@ def handle_bind_request(request, controls, reply):
     return defer.succeed((request, controls))
 
 
-def send_object(objectName, attributes, reply) -> None:
+def send_object(objectName: Union[bytes, str], attributes: Collection, reply: Callable) -> None:
+    """
+    A shortcut to send an LDAPSearchResult object to the client
+    """
     entry = pureldap.LDAPSearchResultEntry(objectName=objectName, attributes=attributes)
     try_log_response(entry)
     reply(entry)
@@ -39,7 +50,7 @@ def send_object(objectName, attributes, reply) -> None:
     reply(done)
 
 
-def translate_attributes_k(attributes: list, mapping: dict):
+def translate_attributes_k(attributes: list, mapping: dict) -> list:
     new_attributes = []
     for attribute in attributes:
         if attribute in mapping.keys():
@@ -49,7 +60,7 @@ def translate_attributes_k(attributes: list, mapping: dict):
     return new_attributes
 
 
-def translate_attributes_kv(attributes: list, mapping: dict):
+def translate_attributes_kv(attributes: list, mapping: dict) -> list:
     new_attributes = []
     for key, values in attributes:
         if key in mapping.keys():
@@ -59,7 +70,7 @@ def translate_attributes_kv(attributes: list, mapping: dict):
     return new_attributes
 
 
-def base_attribute_query(request, attribute):
+def base_attribute_query(request: pureldap.LDAPSearchRequest, attribute: bytes) -> bool:
     return (
         request.scope == 0 and
         len(request.attributes) == 1 and
@@ -80,7 +91,8 @@ def get_domain(dn: bytes) -> str:
     return '.'.join([dc[3:] for dc in dcs.split(',')])
 
 
-def handle_search_request(request, controls, reply):
+def handle_search_request(request: pureldap.LDAPSearchRequest,
+                          controls, reply: Callable) -> Union[defer.Deferred, None]:
     if request.baseObject.decode().startswith('CN=Partitions,CN=Configuration,'):
         return send_object(
             objectName=f'CN=ESAV.FI,{request.baseObject}',
@@ -118,7 +130,8 @@ def handle_search_request(request, controls, reply):
 
 
 class LoggingProxy(ProxyBase):
-    def handleBeforeForwardRequest(self, request, controls, reply):
+    def handleBeforeForwardRequest(self, request: pureldap.LDAPProtocolRequest,
+                                   controls, reply: Callable) -> Union[defer.Deferred, None]:
         log.msg("Request => " + repr(request))
 
         if isinstance(request, pureldap.LDAPBindRequest):
@@ -127,20 +140,17 @@ class LoggingProxy(ProxyBase):
         elif isinstance(request, pureldap.LDAPSearchRequest):
             return handle_search_request(request, controls, reply)
 
-    """
-    A simple example of using `ProxyBase` to log requests and responses.
-    """
-    def handleProxiedResponse(self, response, request, controls):
-        """
-        Log the representation of the responses received.
-        """
+    def handleProxiedResponse(self, response: pureldap.LDAPProtocolResponse,
+                              request: pureldap.LDAPProtocolRequest, controls) -> Union[defer.Deferred, None]:
         if isinstance(response, pureldap.LDAPSearchResultEntry):
 
             response.attributes = translate_attributes_kv(response.attributes, {
                 'ipaUniqueID': 'ObjectGUID'
             })
 
+
             # Add distinguishedname
+            assert isinstance(request, pureldap.LDAPSearchRequest)
             if b'distinguishedName' in request.attributes:
                 response.attributes.append(('distinguishedName', (response.objectName,)))
 
@@ -151,10 +161,6 @@ class LoggingProxy(ProxyBase):
 pureldap.LDAPBindRequest.__repr__ = lambda self: self.__class__.__name__ + '(*auth*)'
 
 if __name__ == '__main__':
-    """
-    Demonstration LDAP proxy; listens on localhost:10389 and
-    passes all requests to localhost:8080.
-    """
     log.startLogging(sys.stderr)
     factory = protocol.ServerFactory()
     proxiedEndpointStr = 'tls:host=ipa.tre.esav.fi:port=636'
@@ -165,12 +171,12 @@ if __name__ == '__main__':
         proxiedEndpointStr,
         LDAPClient)
 
-    def buildProtocol():
+    def build_protocol():
         proto = LoggingProxy()
         proto.clientConnector = clientConnector
         proto.use_tls = use_tls
         return proto
 
-    factory.protocol = buildProtocol
+    factory.protocol = build_protocol
     reactor.listenTCP(10389, factory)
     reactor.run()
