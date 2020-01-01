@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from ldaptor.protocols import pureldap
+from ldaptor.protocols.pureldap import *
 from ldaptor.protocols.ldap.ldapclient import LDAPClient
 from ldaptor.protocols.ldap.ldapconnector import connectToLDAPEndpoint
 from ldaptor.protocols.ldap.proxybase import ProxyBase
@@ -24,7 +24,7 @@ def try_log_response(resp: Any) -> None:
         log.msg('Binary data')
 
 
-def handle_bind_request(request: pureldap.LDAPProtocolRequest, controls, reply: Callable) -> defer.Deferred:
+def handle_bind_request(request: LDAPProtocolRequest, controls, reply: Callable) -> defer.Deferred:
     """
     Allow binding with user@DOMAIN instead of full dn uid=user,...,dc=domain
     """
@@ -42,10 +42,10 @@ def send_object(objectName: Union[bytes, str], attributes: Collection, reply: Ca
     """
     A shortcut to send an LDAPSearchResult object to the client
     """
-    entry = pureldap.LDAPSearchResultEntry(objectName=objectName, attributes=attributes)
+    entry = LDAPSearchResultEntry(objectName=objectName, attributes=attributes)
     try_log_response(entry)
     reply(entry)
-    done = pureldap.LDAPSearchResultDone(resultCode=0)
+    done = LDAPSearchResultDone(resultCode=0)
     try_log_response(done)
     reply(done)
 
@@ -70,7 +70,7 @@ def translate_attributes_kv(attributes: list, mapping: dict) -> list:
     return new_attributes
 
 
-def base_attribute_query(request: pureldap.LDAPSearchRequest, attribute: bytes) -> bool:
+def base_attribute_query(request: LDAPSearchRequest, attribute: bytes) -> bool:
     return (
         request.scope == 0 and
         len(request.attributes) == 1 and
@@ -91,17 +91,17 @@ def get_domain(dn: bytes) -> str:
     return '.'.join([dc[3:] for dc in dcs.split(',')])
 
 
-def to_string(value: Union[pureldap.BEROctetString, bytes, str]) -> str:
+def to_string(value: Union[BEROctetString, bytes, str]) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, bytes):
         return value.decode()
-    if isinstance(value, pureldap.BEROctetString):
+    if isinstance(value, BEROctetString):
         value = value.value
         return to_string(value)
 
 
-def handle_search_request(request: pureldap.LDAPSearchRequest,
+def handle_search_request(request: LDAPSearchRequest,
                           controls, reply: Callable) -> Union[defer.Deferred, None]:
     if request.baseObject.decode().startswith('CN=Partitions,CN=Configuration,'):
         return send_object(
@@ -132,16 +132,16 @@ def handle_search_request(request: pureldap.LDAPSearchRequest,
                 ('name', [get_domain(request.baseObject)])
             ], reply=reply)
 
-    if isinstance(request.filter, pureldap.LDAPFilter_or):
+    if isinstance(request.filter, LDAPFilter_or):
         for sub_filter in request.filter:
-            assert isinstance(sub_filter, pureldap.LDAPFilter_equalityMatch)
+            assert isinstance(sub_filter, LDAPFilter_equalityMatch)
             print(type(sub_filter.assertionValue))
 
             if to_string(sub_filter.attributeDesc).lower() == 'objectclass' and \
                 to_string(sub_filter.assertionValue).lower() == 'container':
-                request.filter.append(pureldap.LDAPFilter_equalityMatch(
-                    attributeDesc=pureldap.BEROctetString(value='objectClass'),
-                    assertionValue=pureldap.BEROctetString(value='nsContainer')
+                request.filter.append(LDAPFilter_equalityMatch(
+                    attributeDesc=BEROctetString(value='objectClass'),
+                    assertionValue=BEROctetString(value='nsContainer')
                 ))
 
         log.msg("Modified => " + repr(request))
@@ -155,19 +155,19 @@ def handle_search_request(request: pureldap.LDAPSearchRequest,
 
 
 class LoggingProxy(ProxyBase):
-    def handleBeforeForwardRequest(self, request: pureldap.LDAPProtocolRequest,
+    def handleBeforeForwardRequest(self, request: LDAPProtocolRequest,
                                    controls, reply: Callable) -> Union[defer.Deferred, None]:
         log.msg("Request => " + repr(request))
 
-        if isinstance(request, pureldap.LDAPBindRequest):
+        if isinstance(request, LDAPBindRequest):
             return handle_bind_request(request, controls, reply)
 
-        elif isinstance(request, pureldap.LDAPSearchRequest):
+        elif isinstance(request, LDAPSearchRequest):
             return handle_search_request(request, controls, reply)
 
-    def handleProxiedResponse(self, response: pureldap.LDAPProtocolResponse,
-                              request: pureldap.LDAPProtocolRequest, controls) -> Union[defer.Deferred, None]:
-        if isinstance(response, pureldap.LDAPSearchResultEntry):
+    def handleProxiedResponse(self, response: LDAPProtocolResponse,
+                              request: LDAPProtocolRequest, controls) -> Union[defer.Deferred, None]:
+        if isinstance(response, LDAPSearchResultEntry):
 
             response.attributes = translate_attributes_kv(response.attributes, {
                 'ipaUniqueID': 'ObjectGUID'
@@ -175,7 +175,7 @@ class LoggingProxy(ProxyBase):
 
 
             # Add distinguishedname
-            assert isinstance(request, pureldap.LDAPSearchRequest)
+            assert isinstance(request, LDAPSearchRequest)
             if b'distinguishedName' in request.attributes:
                 response.attributes.append(('distinguishedName', (response.objectName,)))
 
@@ -183,7 +183,7 @@ class LoggingProxy(ProxyBase):
         return defer.succeed(response)
 
 
-pureldap.LDAPBindRequest.__repr__ = lambda self: self.__class__.__name__ + '(*auth*)'
+LDAPBindRequest.__repr__ = lambda self: self.__class__.__name__ + '(*auth*)'
 
 if __name__ == '__main__':
     log.startLogging(sys.stderr)
