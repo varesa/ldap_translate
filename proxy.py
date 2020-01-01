@@ -64,15 +64,15 @@ def base_attribute_query(request, attribute):
         request.scope == 0 and
         len(request.attributes) == 1 and
         request.attributes[0] == attribute and
-        request.baseObject.startswith('dc=')
+        request.baseObject.startswith(b'dc=')
     )
 
 
-def get_dcs(dn):
-    return re.search('.*?,(dc=.*)', dn).group(1)
+def get_dcs(dn: bytes) -> str:
+    return re.search('.*?,(dc=.*)', dn.decode()).group(1)
 
 
-def get_domain(dn):
+def get_domain(dn: bytes) -> str:
     """
     dc=domain,dc=com --> domain.con
     """
@@ -101,6 +101,13 @@ def handle_search_request(request, controls, reply):
             objectName=request.baseObject,
             attributes=[
                 ('objectGUID', [base64.b64decode('PJ7qGgyLbkqXIY1XOjVyBQ==')]),
+            ], reply=reply)
+
+    if base_attribute_query(request, b'name'):
+        return send_object(
+            objectName=request.baseObject,
+            attributes=[
+                ('name', [get_domain(request.baseObject)])
             ], reply=reply)
 
     request.attributes = translate_attributes_k(request.attributes, {
