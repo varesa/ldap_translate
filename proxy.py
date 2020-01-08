@@ -10,6 +10,7 @@ from functools import partial
 import sys
 import base64
 import re
+import uuid
 from typing import Any, Callable, Collection, Union
 
 
@@ -64,6 +65,9 @@ def translate_attributes_kv(attributes: list, mapping: dict) -> list:
     new_attributes = []
     for key, values in attributes:
         if key in mapping.keys():
+            if mapping[key] == 'objectGUID':
+                object_uuid = uuid.UUID(values[0])
+                values = [object_uuid.bytes]
             new_attributes.append((mapping[key], values,))
         else:
             new_attributes.append((key, values,))
@@ -101,11 +105,54 @@ def to_string(value: Union[BEROctetString, bytes, str]) -> str:
         return to_string(value)
 
 
+def container_search(request: LDAPSearchRequest):
+    if not isinstance(request.filter, LDAPFilter_or):
+        return False
+    
+    for sub_filter in request.filter:
+        assert isinstance(sub_filter, LDAPFilter_equalityMatch)
+
+        if (
+                to_string(sub_filter.attributeDesc).lower() == 'objectclass' and
+                to_string(sub_filter.assertionValue).lower() == 'container'
+        ):
+            return True
+    else:
+        return False
+
+
+def user_search(request: LDAPSearchRequest):
+    if not isinstance(request.filter, LDAPFilter_and):
+        return False
+    
+    for sub_filter in request.filter:
+        if not isinstance(sub_filter, LDAPFilter_equalityMatch):
+            continue
+
+        if (
+                to_string(sub_filter.attributeDesc).lower() == 'objectclass' and
+                to_string(sub_filter.assertionValue).lower() == 'user'
+        ):
+            return True
+    else:
+        return False
+
+
+def search_objectclass_equals(request: LDAPSearchRequest, objectclass: str):
+    if not isinstance(request.filter, LDAPFilter_equalityMatch):
+        return False
+
+    return (
+            to_string(request.filter.attributeDesc).lower() == 'objectclass' and
+            to_string(request.filter.assertionValue).lower() == objectclass.lower()
+    )
+
+
 def handle_search_request(request: LDAPSearchRequest,
                           controls, reply: Callable) -> Union[defer.Deferred, None]:
     if request.baseObject.decode().startswith('CN=Partitions,CN=Configuration,'):
         return send_object(
-            objectName=f'CN=ESAV.FI,{request.baseObject}',
+            objectName=f'CN={get_domain(request.baseObject).upper()},{request.baseObject.decode()}',
             attributes=[
                 ('objectClass', ['top', 'crossRef']),
                 ('netbiosname', [get_domain(request.baseObject).upper()]),
@@ -132,23 +179,30 @@ def handle_search_request(request: LDAPSearchRequest,
                 ('name', [get_domain(request.baseObject)])
             ], reply=reply)
 
-    if isinstance(request.filter, LDAPFilter_or):
-        for sub_filter in request.filter:
-            assert isinstance(sub_filter, LDAPFilter_equalityMatch)
-            print(type(sub_filter.assertionValue))
+    if container_search(request):
+        request.filter = LDAPFilter_equalityMatch(
+            attributeDesc=BEROctetString(value='objectClass'),
+            assertionValue=BEROctetString(value='nsContainer')
+        )
+        log.msg("Modified => " + repr(request))
+    
+    if search_objectclass_equals(request, 'group'):
+        request.filter = LDAPFilter_equalityMatch(
+            attributeDesc=BEROctetString(value='objectClass'),
+            assertionValue=BEROctetString(value='posixgroup')
+        )
+        log.msg("Modified => " + repr(request))
 
-            if to_string(sub_filter.attributeDesc).lower() == 'objectclass' and \
-                to_string(sub_filter.assertionValue).lower() == 'container':
-                request.filter.append(LDAPFilter_equalityMatch(
-                    attributeDesc=BEROctetString(value='objectClass'),
-                    assertionValue=BEROctetString(value='nsContainer')
-                ))
-
+    if user_search(request):
+        request.filter = LDAPFilter_equalityMatch(
+            attributeDesc=BEROctetString(value='objectClass'),
+            assertionValue=BEROctetString(value='person')
+        )
         log.msg("Modified => " + repr(request))
 
 
     request.attributes = translate_attributes_k(request.attributes, {
-        "objectGUID": "ipaUniqueID"
+        b"objectGUID": b"ipaUniqueID"
     })
 
     return defer.succeed((request, controls))
